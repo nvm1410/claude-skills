@@ -126,6 +126,15 @@ element that exists on the screen (a summary card, a budget card, top list rows)
 screen must not also show that element — no duplicates — and the enlarged hero must not
 cover any sibling section. Use the slot-hero system (§7b) to satisfy both at once.
 
+**Rule: a floating hero over a real list must show a DISTINCT item.** When a floating
+hero (§7a) is "one of the list tiles, enlarged" and the real screen behind it still
+renders its list, give the hero content that is NOT one of the visible rows (a
+plausible extra item) — otherwise the frame reads as a duplicated row. And build the
+hero from the app's real shared widgets (e.g. the themed `Card` + the shared
+transaction-tile widget with its real trailing buttons), not a hand-styled
+approximation — hand-built replicas drift from the real UI (wrong radius, missing
+breadcrumb, amount shown where the real screen shows action buttons) and users notice.
+
 **Rule: horizontal overflow only.** The hero is the only element allowed to overflow the
 bezel, and only left/right. Nothing overflows the bezel top or bottom; in-bezel content
 clipping at the bezel bottom (like a scrolled screen) is fine.
@@ -347,13 +356,27 @@ real categories displayed in the UI. Do not use random UUIDs for categories.
 - 3–5 items in the review queue: enough to fill the list without looking sparse.
 - Merchants: generic, globally recognizable (Whole Foods, Amazon, Netflix, Uber) — not
   regional brands that half your audience won't recognize.
-- No PII: no real account numbers, no real names. Mock bank screen: use generic account
-  labels like `Chase Checking ••4521`.
+- No PII: no real account numbers, no real names.
+
+**Brand safety — no real bank identities.** Merchant names inside transaction lists
+are standard fintech practice and fine. But never depict a real bank's product —
+a fabricated "Chase Bank" push notification, a Chase-labeled receipt screen, or a
+`Chase Checking ••4521` account label — in marketing assets: it implies affiliation,
+invites trademark complaints from heavily-policed marks, and is a store-review
+rejection surface (Apple 5.2.1, Play IP/impersonation policy). Use obviously
+fictional names with zero real-world collision risk — e.g. **Cat Bank / Meow Bank /
+PawPay**, account label `Cat Bank Checking ••4521`, with a custom-painted cat-head
+icon (CustomPaint: face circle + two ear triangles + `BlendMode.clear` eye holes in a
+saveLayer) instead of a generic bank glyph. Avoid even plausible names like "MyBank"
+— real apps use them. Prominent items in a review-queue/list screenshot read better
+as generic actions anyway ("Morning coffee", "Buy new clothes") than as brand rows.
 
 **Kachak persona** (worked example):
 - Income: $4,000 salary + $250 freelance = $4,250.
 - Expenses: ~$2,830 across 8 categories; Shopping at $521 vs $400 budget = 130% over.
-- Review queue: Starbucks −$5.75, DoorDash −$24.80, Amazon −$138.40 (3 items).
+- Review queue: Morning coffee −$5.75, Lunch delivery −$24.80, Buy new clothes
+  −$138.40 (3 items, generic actions — no brands); the frame's floating hero is a
+  distinct 4th item, "Buy a new phone" −$329.00.
 
 
 ## 10. Composite frames need bespoke fakes
@@ -390,9 +413,10 @@ thing.
   composite screen's `Stack`.
 
 - **Stacked OS notification cards**: renders the capture story as two Android-style
-  notification cards — source app (e.g. Chase Bank) below, your app (Kachak) above.
-  Each card: white, `BorderRadius.circular(16)`, drop shadow, app icon in a rounded
-  square, app name + timestamp in the header row, title + body below.
+  notification cards — source app (a fictional bank, e.g. Cat Bank — see §9 brand
+  safety) below, your app (Kachak) above. Each card: white,
+  `BorderRadius.circular(16)`, drop shadow, app icon in a rounded square, app name +
+  timestamp in the header row, title + body below.
 
 - **Modal scrim**: inside the screen body (not the outer Stack), add a
   `Positioned.fill(child: ColoredBox(color: Color(0x72000000)))` as the last child of
@@ -496,6 +520,8 @@ Before uploading to the stores:
 - [ ] Frames 1–3 alone tell the full pitch: what's unique → what it tracks → how you
   stay in control.
 - [ ] No PII: no real account numbers, no real names, no real notification content.
+- [ ] No real bank/app identities anywhere (names, logos, account labels) — fictional
+  brands only (§9); merchant names in transaction lists are OK.
 - [ ] Light theme everywhere — consistent across all frames.
 
 
