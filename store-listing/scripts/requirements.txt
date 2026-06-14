@@ -1,0 +1,4 @@
+# Dependencies for tool/aso_research.py (ASO keyword research pipeline).
+#   python -m pip install -r tool/aso_requirements.txt
+apify-client>=1.7.0
+python-dotenv>=1.0.0
