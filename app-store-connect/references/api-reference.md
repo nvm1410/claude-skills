@@ -312,6 +312,135 @@ Must be uploaded for **each** subscription plan (monthly + annual separately). S
 
 ---
 
+## Final Submission (after TestFlight)
+
+### 1. Find the uploaded build
+
+```
+GET /apps/{APP_ID}/builds?sort=-uploadedDate&limit=1&fields[builds]=version,uploadedDate,processingState
+```
+
+Wait for `processingState = VALID` before attaching.
+
+### 2. Attach build to version
+
+```
+PATCH /appStoreVersions/{VERSION_ID}
+{
+  "data": {
+    "type": "appStoreVersions",
+    "id": "{VERSION_ID}",
+    "relationships": {
+      "build": { "data": { "type": "builds", "id": "{build_id}" } }
+    }
+  }
+}
+```
+
+### 3. Age rating declaration
+
+```
+GET /appStoreVersions/{VERSION_ID}/ageRatingDeclaration
+```
+Then PATCH the returned ID:
+```
+PATCH /ageRatingDeclarations/{id}
+{
+  "data": {
+    "type": "ageRatingDeclarations",
+    "id": "{id}",
+    "attributes": {
+      "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+      "contests": "NONE",
+      "gambling": false,
+      "gamblingAndContests": false,
+      "gamblingSimulated": "NONE",
+      "horrorOrFearThemes": "NONE",
+      "kidsAgeBand": null,
+      "matureOrSuggestiveThemes": "NONE",
+      "medicalOrTreatmentInformation": "NONE",
+      "profanityOrCrudeHumor": "NONE",
+      "sexualContentGraphicAndNudity": "NONE",
+      "sexualContentOrNudity": "NONE",
+      "unrestrictedWebAccess": false,
+      "violenceCartoonOrFantasy": "NONE",
+      "violenceRealistic": "NONE",
+      "violenceRealisticProlongedGraphicOrSadistic": "NONE"
+    }
+  }
+}
+```
+
+Kachack appropriate values: all NONE / false — it's a finance tracker with no mature content.
+
+### 4. Export compliance (encryption)
+
+Kachack uses HTTPS (standard encryption) — qualifies for the standard exemption.
+
+```
+POST /appEncryptionDeclarations
+{
+  "data": {
+    "type": "appEncryptionDeclarations",
+    "attributes": {
+      "usesEncryption": true,
+      "exempt": true,
+      "containsThirdPartyEncryption": false,
+      "containsProprietaryCryptography": false,
+      "availableOnFrenchStore": true,
+      "platform": "IOS"
+    },
+    "relationships": {
+      "app": { "data": { "type": "apps", "id": "{APP_ID}" } }
+    }
+  }
+}
+```
+
+Then link to the version:
+```
+PATCH /appStoreVersions/{VERSION_ID}
+{
+  "data": {
+    "type": "appStoreVersions",
+    "id": "{VERSION_ID}",
+    "relationships": {
+      "appEncryptionDeclaration": { "data": { "type": "appEncryptionDeclarations", "id": "{decl_id}" } }
+    }
+  }
+}
+```
+
+### 5. App Review contact info
+
+```
+POST /appStoreReviewDetails
+{
+  "data": {
+    "type": "appStoreReviewDetails",
+    "attributes": {
+      "contactFirstName": "Nhat",
+      "contactLastName": "Vo",
+      "contactPhone": "+84...",
+      "contactEmail": "vominhnhat14101999@gmail.com",
+      "demoAccountName": "",
+      "demoAccountPassword": "",
+      "demoAccountRequired": false,
+      "notes": ""
+    },
+    "relationships": {
+      "appStoreVersion": { "data": { "type": "appStoreVersions", "id": "{VERSION_ID}" } }
+    }
+  }
+}
+```
+
+### 6. Submit for review (manual — portal only)
+
+After all above: ASC portal → App Store → version → Submit for Review.
+
+---
+
 ## Known Errors & Fixes
 
 | Error | Cause | Fix |
