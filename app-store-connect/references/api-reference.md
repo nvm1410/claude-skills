@@ -251,14 +251,18 @@ GET /subscriptions/{sub_id}/introductoryOffers?include=territory&limit=200
 
 ---
 
-## Subscription Promotional Image
+## Subscription App Store Review Screenshot
+
+Required by App Store review for each subscription plan. **Not** `subscriptionImages` (that is a separate promotional image section — different resource).
+
+`GET_COLLECTION` is not allowed on this resource; access is write-only via POST.
 
 ```
-POST /subscriptionImages
+POST /subscriptionAppStoreReviewScreenshots
 {
   "data": {
-    "type": "subscriptionImages",
-    "attributes": { "fileSize": 240160, "fileName": "promo.png" },
+    "type": "subscriptionAppStoreReviewScreenshots",
+    "attributes": { "fileSize": 240160, "fileName": "screenshot.png" },
     "relationships": {
       "subscription": { "data": { "type": "subscriptions", "id": "{sub_id}" } }
     }
@@ -268,6 +272,19 @@ POST /subscriptionImages
 
 Same 3-step upload as screenshots (reserve → PUT → PATCH with `uploaded:true` + MD5).
 
+```
+PATCH /subscriptionAppStoreReviewScreenshots/{id}
+{
+  "data": {
+    "type": "subscriptionAppStoreReviewScreenshots",
+    "id": "{id}",
+    "attributes": { "uploaded": true, "sourceFileChecksum": "{md5_hex}" }
+  }
+}
+```
+
+Must be uploaded for **each** subscription plan (monthly + annual separately). Subscription state shows `MISSING_METADATA` until this is done.
+
 ---
 
 ## Known Errors & Fixes
@@ -275,6 +292,8 @@ Same 3-step upload as screenshots (reserve → PUT → PATCH with `uploaded:true
 | Error | Cause | Fix |
 |-------|-------|-----|
 | 409 ENTITY_ERROR.ATTRIBUTE.NOT_ALLOWED | `preserved: false` in subscriptionPrices POST | Remove `preserved` entirely |
+| `MISSING_METADATA` on subscription state | Review screenshot not uploaded | POST to `subscriptionAppStoreReviewScreenshots` (not `subscriptionImages`) |
+| 403 GET_COLLECTION on subscriptionAppStoreReviewScreenshots | List endpoint not supported | POST-only resource; no GET collection |
 | 409 "must provide territory relationship" | introductoryOffer POST without territory | POST one offer per territory |
 | 403 FORBIDDEN_ERROR on subscriptionAvailabilities | Endpoint is deprecated | Use `subscriptionPlanAvailabilities` |
 | 500 UNEXPECTED_ERROR | Transient ASC server error | Retry with exponential back-off (10s × attempt) |
