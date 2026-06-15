@@ -122,6 +122,45 @@ Tier targets:
 - `appStoreVersionIcon` (app icon) cannot be uploaded via REST API for iOS — comes from the IPA binary.
 - Subscription **review screenshot** = `subscriptionAppStoreReviewScreenshots` (required by App Store review). `subscriptionImages` is a separate promotional image — do not confuse the two. Subscription state shows `MISSING_METADATA` until the review screenshot is uploaded. POST one per plan (monthly + annual). `GET_COLLECTION` is not allowed on this resource.
 
+## Submission Plan (after TestFlight)
+
+Once testing is complete and the final build is uploaded to ASC, the submission flow is:
+
+### Step 1 — You (Xcode)
+Archive → Distribute App → App Store Connect → upload the final build.
+
+### Step 2 — Me (API)
+After the build appears in ASC, run these in order:
+
+| Task | API resource | Notes |
+|------|-------------|-------|
+| Attach build to version | `PATCH /appStoreVersions/{VERSION_ID}` | Set `relationships.build` to the new build ID |
+| Age rating | `PATCH /ageRatingDeclarations/{id}` | Declare violence, mature content, etc. |
+| Export compliance | `POST /appEncryptionDeclarations` | Declare whether app uses encryption (HTTPS = yes, standard exemption) |
+| App Review contact | `POST /appStoreReviewDetails` | Contact name, email, phone, demo account (if any) |
+| Confirm all metadata | verify screenshots, pricing, subscription state | All already done |
+
+To find the build ID after upload:
+```
+GET /apps/{APP_ID}/builds?sort=-uploadedDate&limit=1
+```
+
+### Step 3 — You (ASC portal)
+Review the submission summary → **Submit for Review**.
+
+**What cannot be done via API:**
+- App Privacy nutrition label (portal questionnaire — one-time, already answered if done before)
+- Final "Submit" button (requires portal confirmation)
+
+### Kachack submission status (as of 2026-06-15)
+- Metadata: ✓ uploaded (10 locales)
+- Screenshots: ✓ uploaded (6 per locale × 10 locales, APP_IPHONE_67)
+- Pricing: ✓ 175 territories set
+- Subscriptions: ✓ READY_TO_SUBMIT (monthly + annual, group localizations done)
+- Subscription review screenshots: ✓ uploaded to both plans
+- Sign in with Apple: ✓ code done, portal capability enabled, Firebase provider enabled
+- Build: pending (upload after final TestFlight pass)
+
 ## Additional Resources
 
 - **`references/api-reference.md`** — full endpoint reference, request/response shapes, all known error codes and fixes
