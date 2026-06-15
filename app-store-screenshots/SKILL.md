@@ -523,6 +523,78 @@ Before uploading to the stores:
 - [ ] No real bank/app identities anywhere (names, logos, account labels) — fictional
   brands only (§9); merchant names in transaction lists are OK.
 - [ ] Light theme everywhere — consistent across all frames.
+- [ ] Localized sets (§14): every non-Latin locale (CJK / Thai / Devanagari / etc.)
+  renders real glyphs — no tofu boxes — in **captions, real screens, AppBar titles,
+  buttons, AND the bespoke receipt/notification mocks**; currency symbol and amounts
+  are right for each locale.
+
+
+## 14. ★ Localizing to many languages
+
+Generating the same frame set in N languages is mostly free *if* the app is already
+internationalized — but there is one hard trap (fonts) that wastes a whole render cycle
+if you don't know it up front. Output becomes `N frames × 2 stores × M locales`. Keep
+the base language at the flat path (`screenshots/appstore/…`) and nest the rest under a
+language subdir (`screenshots/appstore/<lang>/…`) so the established set is byte-stable.
+
+**What localizes for free.** The *real* app screens rendered inside the bezels pick up
+the app's own `AppLocalizations` (and any display-layer category/label localizer)
+automatically — pump them with `MaterialApp(locale: <locale>)` and loop the locales.
+You do **not** re-translate UI chrome.
+
+**What you must translate by hand** — only the *bespoke marketing text* that has no
+l10n key: the caption banners, the receipt/notification mock copy, and the seeded
+demo descriptions/merchants. Replace a 2-arg `tr(en, vi)` helper with a map lookup:
+`String tr(Map<String,String> byLocale) => byLocale[locale.languageCode] ?? byLocale['en']!;`
+(`en` is the required fallback). Seeded merchants: use region-appropriate, brand-safe
+retailers per locale (still **no real banks/wallets**, §9); keep globally ubiquitous
+brands (Netflix, Spotify) untranslated.
+
+**Per-locale currency.** Drive a profile map keyed by language code holding
+`(currency, scale, decimals)`. `scale` is a USD-base multiplier picked so the persona
+reads as a *natural local month* — **not an FX rate**; a uniform scale keeps every
+reconciled figure consistent. **Round zero-decimal currencies** (JPY/VND/IDR) in the
+scale function so the real screens never show a fractional yen/đồng/rupiah. In the
+bespoke `Text` mocks, format money through the app's own currency formatter (symbol +
+grouping) so the mock receipts match the real localized screens.
+
+### ★ The font trap (the expensive lesson)
+
+A Latin-only brand font (e.g. Hanken Grotesk) has **no glyphs** for CJK / Thai /
+Devanagari / etc. — so ja/hi/th render as **tofu boxes** in the test engine, which has
+no OS font fallback. Latin locales (de/es/fr/pt/id) are fine and need nothing.
+
+1. **Bundle dev-only fallback fonts, not in `pubspec.yaml`.** Vendor Noto Sans JP /
+   Devanagari / Thai (or whatever your locales need) under `test/screenshots/fonts/`
+   and load them in the font loader by reading the file **off disk** (`File(path)
+   .readAsBytes()` → `FontLoader.addFont`). Because they aren't declared as pubspec
+   assets, they never ship in the app binary — they exist only for screenshot rendering.
+   (Noto Sans JP is ~10 MB; weigh committing it vs. a download step.)
+2. **Skia does NOT do same-family glyph fallback in the `flutter_test` engine.**
+   Registering a Noto face under the brand family name does nothing. The *only*
+   mechanism that works is an explicit `fontFamilyFallback` list. Wire it in **three**
+   places, because different text reaches the font through different paths:
+   - **Theme** — `textTheme.apply(fontFamilyFallback: …)` *and* patch the component
+     themes that build their text styles off the base `textTheme` **before** apply:
+     `appBarTheme.titleTextStyle`, `tabBarTheme`, `listTileTheme`, and the **button
+     themes** (whose `textStyle` is a `WidgetStateProperty<TextStyle>` — resolve it,
+     copyWith the fallback, re-wrap). Miss these and body text renders while AppBar
+     titles / list labels / dialog buttons tofu.
+   - **Bespoke mocks** — bare/hardcoded `TextStyle`s in your receipt/notification
+     mocks inherit `DefaultTextStyle.fallback` (no fallback list) under a Scaffold, so
+     add explicit `fontFamilyFallback` to each. A `DefaultTextStyle.merge` wrapped
+     around the whole frame does **not** survive a descendant Scaffold/Material's own
+     default text style — don't rely on it.
+   - **Captions** — the marketing caption `TextStyle`s: add the fallback there too.
+3. **Verify by eyeballing the non-Latin frames specifically.** The usual tofu order of
+   discovery: captions render first (they get explicit fallback), then you find the
+   receipt/notification mocks, the AppBar title, and finally the dialog buttons — each a
+   separate path. Re-render and re-check after each fix; one render cycle per layer.
+
+Slot-mock category labels are easy to forget: if the real screens localize category
+names via a display-layer localizer, route the mock's hardcoded labels through the same
+localizer so the slot frames (dashboard/budgets/insights) don't show English categories
+next to localized everything-else.
 
 
 ---
