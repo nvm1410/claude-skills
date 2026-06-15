@@ -16,6 +16,7 @@ Most of the iOS App Store listing can be automated via the ASC REST API. No Xcod
 | Screenshots (all locales) | `tool/asc_upload_screenshots.py` | `appScreenshotSets`, `appScreenshots` |
 | Subscription pricing (all 175 territories) | `tool/asc_price_all_territories.py` | `subscriptionPrices`, `subscriptionPricePoints` |
 | Subscription review screenshot | inline script (see references) | `subscriptionAppStoreReviewScreenshots` |
+| Subscription group localizations | inline script (see references) | `subscriptionGroupLocalizations` |
 | Subscription availability | `POST /subscriptionPlanAvailabilities` | `subscriptionPlanAvailabilities` |
 | Introductory offers / free trial | `POST /subscriptionIntroductoryOffers` | `subscriptionIntroductoryOffers` |
 
