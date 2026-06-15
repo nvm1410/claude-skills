@@ -190,6 +190,31 @@ POST /subscriptionPrices
 
 ---
 
+## Subscription Group Localizations
+
+Required for each subscription group — subscriptions show `MISSING_METADATA` until the group has at least one locale. One POST per locale.
+
+```
+POST /subscriptionGroupLocalizations
+{
+  "data": {
+    "type": "subscriptionGroupLocalizations",
+    "attributes": {
+      "locale": "en-US",
+      "name": "Kachak Pro",
+      "customAppName": "Kachak"
+    },
+    "relationships": {
+      "subscriptionGroup": { "data": { "type": "subscriptionGroups", "id": "{group_id}" } }
+    }
+  }
+}
+```
+
+Get group ID: `GET /apps/{app_id}/subscriptionGroups` — check `included` for `subscriptionGroupLocalizations` to see if any exist.
+
+---
+
 ## Subscription Availability
 
 `subscriptionAvailabilities` (without "plan") is **deprecated**.
@@ -292,7 +317,7 @@ Must be uploaded for **each** subscription plan (monthly + annual separately). S
 | Error | Cause | Fix |
 |-------|-------|-----|
 | 409 ENTITY_ERROR.ATTRIBUTE.NOT_ALLOWED | `preserved: false` in subscriptionPrices POST | Remove `preserved` entirely |
-| `MISSING_METADATA` on subscription state | Review screenshot not uploaded | POST to `subscriptionAppStoreReviewScreenshots` (not `subscriptionImages`) |
+| `MISSING_METADATA` on subscription state | Review screenshot not uploaded OR subscription group has no localizations | POST to `subscriptionAppStoreReviewScreenshots`; also POST `subscriptionGroupLocalizations` for each locale |
 | 403 GET_COLLECTION on subscriptionAppStoreReviewScreenshots | List endpoint not supported | POST-only resource; no GET collection |
 | 409 "must provide territory relationship" | introductoryOffer POST without territory | POST one offer per territory |
 | 403 FORBIDDEN_ERROR on subscriptionAvailabilities | Endpoint is deprecated | Use `subscriptionPlanAvailabilities` |
