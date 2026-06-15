@@ -15,7 +15,7 @@ Most of the iOS App Store listing can be automated via the ASC REST API. No Xcod
 | Text metadata (name, subtitle, description, keywords) | `tool/asc_upload_listing.py` | `appInfoLocalizations`, `appStoreVersionLocalizations` |
 | Screenshots (all locales) | `tool/asc_upload_screenshots.py` | `appScreenshotSets`, `appScreenshots` |
 | Subscription pricing (all 175 territories) | `tool/asc_price_all_territories.py` | `subscriptionPrices`, `subscriptionPricePoints` |
-| Subscription promotional image | inline script (see references) | `subscriptionImages` |
+| Subscription review screenshot | inline script (see references) | `subscriptionAppStoreReviewScreenshots` |
 | Subscription availability | `POST /subscriptionPlanAvailabilities` | `subscriptionPlanAvailabilities` |
 | Introductory offers / free trial | `POST /subscriptionIntroductoryOffers` | `subscriptionIntroductoryOffers` |
 
@@ -119,6 +119,7 @@ Tier targets:
 - Screenshot upload is 3-step: reserve → PUT binary → PATCH with MD5 checksum.
 - Introductory offers require a `territory` relationship — one POST per territory (175 POSTs).
 - `appStoreVersionIcon` (app icon) cannot be uploaded via REST API for iOS — comes from the IPA binary.
+- Subscription **review screenshot** = `subscriptionAppStoreReviewScreenshots` (required by App Store review). `subscriptionImages` is a separate promotional image — do not confuse the two. Subscription state shows `MISSING_METADATA` until the review screenshot is uploaded. POST one per plan (monthly + annual). `GET_COLLECTION` is not allowed on this resource.
 
 ## Additional Resources
 
