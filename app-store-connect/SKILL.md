@@ -1,53 +1,462 @@
 ---
 name: app-store-connect
-description: This skill should be used when the user asks to "upload screenshots to App Store", "set App Store pricing", "manage subscriptions in ASC", "upload store listing metadata", "automate App Store Connect", "set subscription prices for all territories", "upload subscription image", or anything involving the App Store Connect REST API.
-version: 1.0.0
+description: Use this skill when the user asks to submit an iOS app to the App Store, clear "Add for Review" blockers, upload metadata/screenshots, set pricing, manage subscriptions, or automate anything in App Store Connect via the REST API.
+version: 2.0.0
 ---
 
-# App Store Connect Automation
+# App Store Connect — Full Submission Flow
 
-Most of the iOS App Store listing can be automated via the ASC REST API. No Xcode or App Store Connect UI required for metadata, screenshots, pricing, and subscriptions.
+## Overview
 
-## What Can Be Automated
+This skill covers the complete journey from a ready build to "Submitted for Review". Most steps can be automated via the ASC REST API. A few are portal-only (noted below).
 
-| Task | Script | API resource |
-|------|--------|--------------|
-| Text metadata (name, subtitle, description, keywords) | `tool/asc_upload_listing.py` | `appInfoLocalizations`, `appStoreVersionLocalizations` |
-| Screenshots (all locales) | `tool/asc_upload_screenshots.py` | `appScreenshotSets`, `appScreenshots` |
-| Subscription pricing (all 175 territories) | `tool/asc_price_all_territories.py` | `subscriptionPrices`, `subscriptionPricePoints` |
-| Subscription review screenshot | inline script (see references) | `subscriptionAppStoreReviewScreenshots` |
-| Subscription group localizations | inline script (see references) | `subscriptionGroupLocalizations` |
-| Subscription availability | `POST /subscriptionPlanAvailabilities` | `subscriptionPlanAvailabilities` |
-| Introductory offers / free trial | `POST /subscriptionIntroductoryOffers` | `subscriptionIntroductoryOffers` |
+---
 
-**Cannot be automated via API:**
-- App icon — comes from the submitted build binary (IPA). Upload via Xcode.
-- App Privacy nutrition label — portal-only questionnaire.
+## 1. Credentials Setup
 
-## Credentials
+All API calls need an ES256 JWT signed with an ASC API key.
 
-All scripts read from `/tmp/`:
+**Get the key:** ASC → Users and Access → Integrations → App Store Connect API → generate a key. Download the `.p8` once (cannot re-download). Note the Key ID and Issuer ID.
 
-```
-/tmp/asc_key.p8       — ES256 private key (downloaded from ASC → Users & Access → Keys)
-/tmp/asc_key_id.txt   — Key ID (e.g. R7U77NV4U2)
-/tmp/asc_issuer_id.txt — Issuer ID (UUID from same page)
+**JWT generation (Node.js — most reliable):**
+
+```bash
+node -e "
+const fs=require('fs'),{createSign}=require('crypto');
+const pem=fs.readFileSync('/path/to/AuthKey_KEYID.p8','utf8');
+const enc=o=>Buffer.from(JSON.stringify(o)).toString('base64url');
+const now=Math.floor(Date.now()/1000);
+const s=enc({alg:'ES256',kid:'KEY_ID',typ:'JWT'})+'.'+enc({iss:'ISSUER_UUID',iat:now,exp:now+1200,aud:'appstoreconnect-v1'});
+fs.writeFileSync('/tmp/asc_jwt.txt',s+'.'+createSign('sha256').update(s).sign({key:pem,dsaEncoding:'ieee-p1363'},'base64url'));
+"
+JWT=$(cat /tmp/asc_jwt.txt)
 ```
 
-JWT token: ES256, `aud=appstoreconnect-v1`, `exp=now+1100`. Regenerate per request — no caching needed (SDK auto-refreshes).
+**JWT generation (Python — alternative):**
 
-## Kachack App Constants
+```python
+import jwt, time
+token = jwt.encode(
+    {'iss': ISSUER_ID, 'iat': int(time.time()), 'exp': int(time.time())+1100, 'aud': 'appstoreconnect-v1'},
+    KEY_PEM, algorithm='ES256', headers={'kid': KEY_ID}
+)
+```
+
+**Rules:**
+- Regenerate per request — tokens expire in 20 min, reuse risks 401
+- Always use `curl -g` when the URL contains `[...]` (e.g. `?fields[apps]=bundleId`) — without `-g`, curl treats `[apps]` as a glob and fails silently with HTTP 000
+- 3 retries with exponential back-off on 500/503
+- 30s timeout per request
+
+**Health check before any script run:**
+```bash
+CODE=$(curl --max-time 15 -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps/APP_ID?fields[apps]=bundleId")
+[[ "$CODE" != "200" ]] && echo "ASC down ($CODE) — abort" && exit 1
+```
+
+ASC has real outages (check Reddit/developer forums). All 500s during an outage look identical to app-specific errors — always health-check first.
+
+---
+
+## 2. Find App Constants
+
+```bash
+# App ID
+curl -g -s -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=YOUR.BUNDLE.ID&fields[apps]=id" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])"
+
+# App Info ID (needed for category, age rating, privacy URL)
+curl -s -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps/APP_ID/appInfos?limit=1" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])"
+
+# Version ID (for current PREPARE_FOR_SUBMISSION version)
+curl -s -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps/APP_ID/appStoreVersions?filter[appStoreState]=PREPARE_FOR_SUBMISSION" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])"
+```
+
+---
+
+## 3. App Information (one-time setup)
+
+### Content Rights
+```bash
+PATCH /apps/APP_ID
+{"data":{"type":"apps","id":"APP_ID","attributes":{"contentRightsDeclaration":"DOES_NOT_USE_THIRD_PARTY_CONTENT"}}}
+# or "USES_THIRD_PARTY_CONTENT" if the app contains licensed content
+```
+
+### Primary & Secondary Category
+Categories live on `appInfos`, NOT on `apps`. Do NOT try `PATCH /apps/APP_ID` with category relationships — it will 409.
+
+```bash
+PATCH /appInfos/APP_INFO_ID
+{
+  "data": {
+    "type": "appInfos",
+    "id": "APP_INFO_ID",
+    "relationships": {
+      "primaryCategory":   {"data": {"type": "appCategories", "id": "FINANCE"}},
+      "secondaryCategory": {"data": {"type": "appCategories", "id": "PRODUCTIVITY"}}
+    }
+  }
+}
+```
+
+Common category IDs: `FINANCE`, `PRODUCTIVITY`, `UTILITIES`, `LIFESTYLE`, `HEALTH_AND_FITNESS`, `BUSINESS`, `EDUCATION`, `ENTERTAINMENT`, `SOCIAL_NETWORKING`.
+
+### Price — Free App
+```bash
+# 1. Find the Free price point for USA
+curl -g -s -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps/APP_ID/appPricePoints?filter[territory]=USA&limit=10" \
+  | python3 -c "
+import json,sys
+for p in json.load(sys.stdin)['data']:
+    if p['attributes']['customerPrice']=='0.00':
+        print(p['id']); break"
+
+# 2. Create price schedule
+POST /appPriceSchedules
+{
+  "data": {
+    "type": "appPriceSchedules",
+    "relationships": {
+      "app":            {"data": {"type": "apps",           "id": "APP_ID"}},
+      "basePricePoint": {"data": {"type": "appPricePoints", "id": "FREE_PRICE_POINT_ID"}}
+    }
+  }
+}
+```
+
+If `GET /apps/APP_ID/appPriceSchedule` returns 200, a schedule already exists — no action needed.
+
+### Privacy Policy URL
+Privacy URL lives on `appInfoLocalizations` (per-locale, under appInfos), NOT on `apps`.
+
+```bash
+# Get all localization IDs
+GET /appInfos/APP_INFO_ID/appInfoLocalizations?limit=25
+
+# Patch each locale
+PATCH /appInfoLocalizations/LOC_ID
+{"data":{"type":"appInfoLocalizations","id":"LOC_ID","attributes":{"privacyPolicyUrl":"https://yoursite.com/privacy.html"}}}
+```
+
+### Support URL
+Support URL lives on `appStoreVersionLocalizations` (per-locale, under the version).
+
+```bash
+# Get all version localization IDs
+GET /appStoreVersions/VERSION_ID/appStoreVersionLocalizations?limit=50
+
+# Patch each locale
+PATCH /appStoreVersionLocalizations/VER_LOC_ID
+{"data":{"type":"appStoreVersionLocalizations","id":"VER_LOC_ID","attributes":{"supportUrl":"https://yoursite.com/support"}}}
+```
+
+### iPhone-Only (no iPad)
+In `ios/Runner.xcodeproj/project.pbxproj`, set all occurrences:
+```
+TARGETED_DEVICE_FAMILY = "1";   ← iPhone only
+TARGETED_DEVICE_FAMILY = "1,2"; ← iPhone + iPad (default Flutter)
+```
+
+Change all 3 occurrences (Debug, Release, Profile build configs). Requires a new build upload — the portal reflects whatever the binary declares. ASC will stop requiring iPad screenshots once a new iPhone-only binary is processed.
+
+Verify after build:
+```bash
+grep -r "UIDeviceFamily" build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Info.plist
+# Should show only <integer>1</integer>
+```
+
+---
+
+## 4. Age Rating
+
+The `ageRatingDeclaration` ID is **the same as `APP_INFO_ID`**.
+
+```bash
+# Get current (to confirm the ID)
+GET /appInfos/APP_INFO_ID/ageRatingDeclaration
+
+# Set 4+ (finance/productivity app with no mature content)
+PATCH /ageRatingDeclarations/APP_INFO_ID
+{
+  "data": {
+    "type": "ageRatingDeclarations",
+    "id": "APP_INFO_ID",
+    "attributes": {
+      "ageAssurance": false,
+      "advertising": false,
+      "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+      "contests": "NONE",
+      "gambling": false,
+      "gamblingSimulated": "NONE",
+      "gunsOrOtherWeapons": "NONE",
+      "healthOrWellnessTopics": false,
+      "horrorOrFearThemes": "NONE",
+      "kidsAgeBand": null,
+      "lootBox": false,
+      "matureOrSuggestiveThemes": "NONE",
+      "medicalOrTreatmentInformation": "NONE",
+      "messagingAndChat": false,
+      "parentalControls": false,
+      "profanityOrCrudeHumor": "NONE",
+      "sexualContentGraphicAndNudity": "NONE",
+      "sexualContentOrNudity": "NONE",
+      "unrestrictedWebAccess": false,
+      "userGeneratedContent": false,
+      "violenceCartoonOrFantasy": "NONE",
+      "violenceRealistic": "NONE",
+      "violenceRealisticProlongedGraphicOrSadistic": "NONE"
+    }
+  }
+}
+```
+
+**Critical gotchas:**
+- `ageAssurance` is **required** — omitting it returns 409 "You must provide a value for 'ageAssurance'"
+- Attribute names changed in ~2024. Old names like `alcoholTobaccoDrugs` return 409 ENTITY_ERROR.ATTRIBUTE.UNKNOWN. Use the full new names above.
+- Types are mixed: booleans (`gambling`, `unrestrictedWebAccess`) vs strings (`"NONE"`, `"MILD"`, `"FREQUENT_AND_INTENSE"`). Sending the wrong type returns 409.
+
+---
+
+## 5. App Privacy Nutrition Labels
+
+**⚠️ Portal-only — the `appDataUsages` API endpoint was removed from the ASC REST API (returns 404 PATH_ERROR).**
+
+Do this manually in ASC portal: App Privacy section → answer the questionnaire → Publish.
+
+**Do NOT forget to click Publish** — unpublished labels are a submission blocker.
+
+Typical answers for a finance app with AI/backend processing:
+- Contact Info: Name, Email → App Functionality, linked to identity
+- Identifiers: User ID, Device ID → App Functionality, linked
+- Financial Info: Other Financial Info (user-entered expenses) → App Functionality, linked
+- User Content: Photos or Videos (screenshots for AI), Audio Data (voice capture) → App Functionality, not linked
+- Usage Data: Product Interaction (analytics) → Analytics, not linked
+- Diagnostics: Crash Data, Performance Data → App Functionality, not linked
+- Not used for tracking (no ad/cross-app SDKs)
+
+For "Do you or your third-party partners use [data type] for tracking?" — answer **No** for each data type if no ad network or cross-app tracking SDKs are integrated.
+
+---
+
+## 6. Text Metadata
+
+### App Info Localizations (name, subtitle, privacy URL)
+```bash
+GET /appInfos/APP_INFO_ID/appInfoLocalizations?limit=25
+PATCH /appInfoLocalizations/LOC_ID
+{"data":{"type":"appInfoLocalizations","id":"LOC_ID","attributes":{"name":"App Name","subtitle":"Short tagline","privacyPolicyUrl":"https://..."}}}
+```
+
+### Version Localizations (description, keywords, whatsNew, supportUrl)
+```bash
+GET /appStoreVersions/VERSION_ID/appStoreVersionLocalizations?limit=50
+PATCH /appStoreVersionLocalizations/VER_LOC_ID
+{"data":{"type":"appStoreVersionLocalizations","id":"VER_LOC_ID","attributes":{"description":"...","keywords":"...","promotionalText":"...","supportUrl":"https://..."}}}
+```
+
+`whatsNew` is blocked on first submission — set it after the first version is approved.
+
+Skip PATCH if value already matches — ASC returns STATE_ERROR on redundant subtitle updates when app is in PREPARE_FOR_SUBMISSION.
+
+---
+
+## 7. Screenshots
+
+Display type for iPhone 16 Pro Max: `APP_IPHONE_67` (1290×2796).
+
+**3-step upload:**
+
+```bash
+# Step 1 — Reserve
+POST /appScreenshots
+{"data":{"type":"appScreenshots","attributes":{"fileSize":240160,"fileName":"01_screen.png"},
+ "relationships":{"appScreenshotSet":{"data":{"type":"appScreenshotSets","id":"SET_ID"}}}}}
+# Response: uploadOperations with presigned URL
+
+# Step 2 — PUT binary
+PUT {uploadOperation.url}   (Content-Type: image/png, raw bytes)
+
+# Step 3 — Commit
+PATCH /appScreenshots/SCREENSHOT_ID
+{"data":{"type":"appScreenshots","id":"SCREENSHOT_ID","attributes":{"uploaded":true,"sourceFileChecksum":"MD5_HEX"}}}
+```
+
+Checksum = MD5 hex of the full file. ASC processes asynchronously after commit (allow 1–2 min).
+
+To create a screenshot set first:
+```bash
+POST /appScreenshotSets
+{"data":{"type":"appScreenshotSets","attributes":{"screenshotDisplayType":"APP_IPHONE_67"},
+ "relationships":{"appStoreVersionLocalization":{"data":{"type":"appStoreVersionLocalizations","id":"VER_LOC_ID"}}}}}
+```
+
+---
+
+## 8. Subscriptions
+
+See `references/api-reference.md` for full subscription pricing, group localizations, availability, introductory offers, and review screenshot flows.
+
+**Quick checklist for subscription readiness:**
+- [ ] Subscription group has at least one `subscriptionGroupLocalization` → clears `MISSING_METADATA`
+- [ ] Each plan has a `subscriptionAppStoreReviewScreenshot` uploaded → clears `MISSING_METADATA`
+- [ ] Prices set for all desired territories via `subscriptionPrices`
+- [ ] Availability set via `subscriptionPlanAvailabilities` (NOT deprecated `subscriptionAvailabilities`)
+- [ ] Introductory offers (free trial) set per territory if desired
+
+---
+
+## 9. Build Upload & Attachment
+
+**Build the IPA (Flutter):**
+```bash
+flutter build ipa --release \
+  --dart-define=API_BASE_URL=https://yourapi.com/api \
+  --dart-define=REVENUECAT_IOS_KEY=appl_xxx
+```
+
+**Upload:**
+```bash
+xcrun altool --upload-app -f build/ios/ipa/*.ipa \
+  --apiKey KEY_ID --apiIssuer ISSUER_UUID
+```
+Or open Xcode Organizer → Distribute App → App Store Connect.
+
+**Wait for processing, then attach to version:**
+```bash
+# Find the build
+GET /apps/APP_ID/builds?sort=-uploadedDate&limit=1&fields[builds]=version,processingState
+# Wait for processingState = VALID
+
+# Attach
+PATCH /appStoreVersions/VERSION_ID
+{"data":{"type":"appStoreVersions","id":"VERSION_ID",
+ "relationships":{"build":{"data":{"type":"builds","id":"BUILD_ID"}}}}}
+```
+
+---
+
+## 10. Pre-Submission Checklist
+
+Run these via API to confirm everything is in order before clicking Submit:
+
+```bash
+# Content rights
+GET /apps/APP_ID?fields[apps]=contentRightsDeclaration
+
+# Category
+GET /apps/APP_ID/appInfos?limit=1&include=primaryCategory
+
+# Price
+GET /apps/APP_ID/appPriceSchedule
+
+# Privacy URLs (all locales)
+GET /appInfos/APP_INFO_ID/appInfoLocalizations?limit=25
+
+# Support URLs (all locales)
+GET /appStoreVersions/VERSION_ID/appStoreVersionLocalizations?limit=50
+
+# Age rating
+GET /appInfos/APP_INFO_ID/ageRatingDeclaration
+
+# Build attached
+GET /appStoreVersions/VERSION_ID?include=build
+```
+
+**Portal-only checks (must verify in browser):**
+- App Privacy published (not just saved)
+- Price shows "Free" or correct tier in Pricing and Availability
+- Device availability matches binary (iPhone-only if TARGETED_DEVICE_FAMILY=1)
+
+---
+
+## 11. Final Submission
+
+Export compliance (if app uses HTTPS/TLS — standard exemption):
+```bash
+POST /appEncryptionDeclarations
+{"data":{"type":"appEncryptionDeclarations","attributes":{"usesEncryption":true,"exempt":true,
+ "containsThirdPartyEncryption":false,"containsProprietaryCryptography":false,"availableOnFrenchStore":true,"platform":"IOS"},
+ "relationships":{"app":{"data":{"type":"apps","id":"APP_ID"}}}}}
+
+# Link to version
+PATCH /appStoreVersions/VERSION_ID
+{"data":{"type":"appStoreVersions","id":"VERSION_ID",
+ "relationships":{"appEncryptionDeclaration":{"data":{"type":"appEncryptionDeclarations","id":"DECL_ID"}}}}}
+```
+
+App Review contact:
+```bash
+POST /appStoreReviewDetails
+{"data":{"type":"appStoreReviewDetails","attributes":{
+  "contactFirstName":"First","contactLastName":"Last",
+  "contactPhone":"+1...","contactEmail":"email@example.com",
+  "demoAccountRequired":false,"notes":""},
+ "relationships":{"appStoreVersion":{"data":{"type":"appStoreVersions","id":"VERSION_ID"}}}}}
+```
+
+**Submit for Review: portal only** — ASC portal → version → Submit for Review. There is no API endpoint to trigger submission.
+
+---
+
+## What Cannot Be Automated (Portal-Only)
+
+| Task | Why |
+|------|-----|
+| App Privacy nutrition labels | `appDataUsages` API endpoint removed (~2024) |
+| Final "Submit for Review" | No API endpoint |
+| App icon | Comes from the IPA binary |
+| `whatsNew` on first submission | ASC blocks it until v1 is approved |
+
+---
+
+## Known API Gotchas
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| curl HTTP 000, no response | URL has `[...]` and `-g` flag missing | Always use `curl -g` |
+| 409 ENTITY_ERROR.ATTRIBUTE.UNKNOWN on age rating | Old attribute names (e.g. `alcoholTobaccoDrugs`) | Use new names from the full list above |
+| 409 "must provide value for 'ageAssurance'" | Missing required field | Add `"ageAssurance": false` |
+| 409 on category PATCH via `/apps` | Categories are not on the `apps` resource | Use `PATCH /appInfos/APP_INFO_ID` |
+| 404 on `appDataUsages` | Endpoint removed from API | Do App Privacy in portal |
+| 409 ENTITY_ERROR.ATTRIBUTE.NOT_ALLOWED on subscriptionPrices | `preserved` field included | Omit `preserved` entirely |
+| MISSING_METADATA on subscription | Review screenshot not uploaded OR group missing locale | POST to `subscriptionAppStoreReviewScreenshots`; POST `subscriptionGroupLocalizations` |
+| 403 on `subscriptionAvailabilities` | Endpoint deprecated | Use `subscriptionPlanAvailabilities` |
+| STATE_ERROR on subtitle PATCH | Value unchanged in PREPARE_FOR_SUBMISSION | Fetch current first; skip if same |
+| 500 on specific locale records | Apple server-side shard issue | Retry later; if persistent during outage wait for ASC recovery |
+| Broad 500s across all endpoints | ASC outage | Check Reddit/Apple developer forums; wait |
+
+---
+
+## Kachak App Constants
 
 ```
 APP_ID      = '6780402754'
 APP_INFO_ID = 'c81e812c-bdd2-48d9-80f4-9b8fc33381ff'
 VERSION_ID  = '3c871617-abf8-4430-bb81-fcc640aaaf83'
-MONTHLY     = '6780403485'
-ANNUAL      = '6780403462'
+BUNDLE_ID   = 'site.devtor.kachakapp'
+MONTHLY_SUB = '6780403485'
+ANNUAL_SUB  = '6780403462'
+
+KEY_ID      = '7A4R6NKH7R'
+KEY_PATH    = '/Users/admin/Downloads/AuthKey_7A4R6NKH7R.p8'
+ISSUER_ID   = 'b6f1bf4f-ad53-4391-94c3-402ae1622742'
 ```
 
-Version localization IDs (10 locales, all exist):
+App Info Localizations (under appInfos — for name, subtitle, privacy URL):
+```
+en-US  (query GET /appInfos/APP_INFO_ID/appInfoLocalizations to get IDs)
+```
 
+Version Localizations (under appStoreVersions — for description, supportUrl):
 ```
 en-US  995d0e55-c3b6-45c1-b1a7-8dfc7e90d23b
 de-DE  809225a1-a4ed-477f-8fd1-ce9d520fc7c3
@@ -60,107 +469,3 @@ pt-BR  86177cfc-c7d4-440d-b7cf-df26b864953d
 th     482f949f-f358-45a5-9b8c-b3654bace257
 vi     d1d65c94-583d-4c30-a449-2425734d46d3
 ```
-
-## Running the Scripts
-
-```bash
-# Dry-run first, then live
-python3 tool/asc_upload_listing.py --dry-run
-python3 tool/asc_upload_listing.py
-
-python3 tool/asc_upload_screenshots.py --dry-run
-python3 tool/asc_upload_screenshots.py
-python3 tool/asc_upload_screenshots.py --locale ja        # single locale
-python3 tool/asc_upload_screenshots.py --force            # re-upload existing
-
-python3 tool/asc_price_all_territories.py --dry-run
-python3 tool/asc_price_all_territories.py
-```
-
-## Screenshots — iOS-Specific Rules
-
-Display type: `APP_IPHONE_67` (1290×2796).  
-Source: `screenshots/appstore/` (en-US root) + `screenshots/appstore/{locale}/` (others).
-
-**iOS order** (08 first; skip 01 and 03 — Android-only features):
-```
-08_ios_capture.png   ← first (iOS share-sheet capture story)
-02_transactions.png
-04_dashboard.png
-05_review_queue.png
-06_budgets.png
-07_insights.png
-```
-
-**Android** (7 frames, skip 08): `01–07_*.png` in order.
-
-## Pricing — Tier-Index Method
-
-Apple's price ladder is consistent across currencies: same index = same relative tier.
-
-1. Fetch USA price ladder for each subscription (monthly + annual).
-2. Find the index of each USD tier target ($9.99, $6.99, $4.99, $2.99).
-3. For every other territory, fetch its ladder and pick the same index.
-
-Tier targets:
-
-| Tier | Monthly | Annual | Countries |
-|------|---------|--------|-----------|
-| T1 | $9.99 | $69.99 | US, EU core, JP, SG, AU, Gulf |
-| T2 | $6.99 | $49.99 | ES, KR, Baltics, ROU/BGR, Gulf T2 |
-| T3 | $4.99 | $34.99 | LatAm, ASEAN-mid, CIS, MENA |
-| T4 | $2.99 | $19.99 | South/SE Asia, Africa |
-
-**Page budget**: monthly tier targets fit in 1 page (max index 126 / 200). Annual needs 2 pages (max index 386 / 400). The script handles this automatically.
-
-## Key API Gotchas
-
-- `subscriptionAvailabilities` (without "plan") is **deprecated**. Use `subscriptionPlanAvailabilities`.
-- `preserved` attribute is **not allowed** in `subscriptionPrices` POST — omit it entirely.
-- Screenshot upload is 3-step: reserve → PUT binary → PATCH with MD5 checksum.
-- Introductory offers require a `territory` relationship — one POST per territory (175 POSTs).
-- `appStoreVersionIcon` (app icon) cannot be uploaded via REST API for iOS — comes from the IPA binary.
-- Subscription **review screenshot** = `subscriptionAppStoreReviewScreenshots` (required by App Store review). `subscriptionImages` is a separate promotional image — do not confuse the two. Subscription state shows `MISSING_METADATA` until the review screenshot is uploaded. POST one per plan (monthly + annual). `GET_COLLECTION` is not allowed on this resource.
-
-## Submission Plan (after TestFlight)
-
-Once testing is complete and the final build is uploaded to ASC, the submission flow is:
-
-### Step 1 — You (Xcode)
-Archive → Distribute App → App Store Connect → upload the final build.
-
-### Step 2 — Me (API)
-After the build appears in ASC, run these in order:
-
-| Task | API resource | Notes |
-|------|-------------|-------|
-| Attach build to version | `PATCH /appStoreVersions/{VERSION_ID}` | Set `relationships.build` to the new build ID |
-| Age rating | `PATCH /ageRatingDeclarations/{id}` | Declare violence, mature content, etc. |
-| Export compliance | `POST /appEncryptionDeclarations` | Declare whether app uses encryption (HTTPS = yes, standard exemption) |
-| App Review contact | `POST /appStoreReviewDetails` | Contact name, email, phone, demo account (if any) |
-| Confirm all metadata | verify screenshots, pricing, subscription state | All already done |
-
-To find the build ID after upload:
-```
-GET /apps/{APP_ID}/builds?sort=-uploadedDate&limit=1
-```
-
-### Step 3 — You (ASC portal)
-Review the submission summary → **Submit for Review**.
-
-**What cannot be done via API:**
-- App Privacy nutrition label (portal questionnaire — one-time, already answered if done before)
-- Final "Submit" button (requires portal confirmation)
-
-### Kachack submission status (as of 2026-06-15)
-- Metadata: ✓ uploaded (10 locales)
-- Screenshots: ✓ uploaded (6 per locale × 10 locales, APP_IPHONE_67)
-- Pricing: ✓ 175 territories set
-- Subscriptions: ✓ READY_TO_SUBMIT (monthly + annual, group localizations done)
-- Subscription review screenshots: ✓ uploaded to both plans
-- Sign in with Apple: ✓ code done, portal capability enabled, Firebase provider enabled
-- Build: pending (upload after final TestFlight pass)
-
-## Additional Resources
-
-- **`references/api-reference.md`** — full endpoint reference, request/response shapes, all known error codes and fixes

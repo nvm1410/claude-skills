@@ -350,23 +350,33 @@ PATCH /ageRatingDeclarations/{id}
     "type": "ageRatingDeclarations",
     "id": "{id}",
     "attributes": {
+      "ageAssurance": false,
+      "advertising": false,
       "alcoholTobaccoOrDrugUseOrReferences": "NONE",
       "contests": "NONE",
       "gambling": false,
-      "gamblingAndContests": false,
       "gamblingSimulated": "NONE",
+      "gunsOrOtherWeapons": "NONE",
+      "healthOrWellnessTopics": false,
       "horrorOrFearThemes": "NONE",
       "kidsAgeBand": null,
+      "lootBox": false,
       "matureOrSuggestiveThemes": "NONE",
       "medicalOrTreatmentInformation": "NONE",
+      "messagingAndChat": false,
+      "parentalControls": false,
       "profanityOrCrudeHumor": "NONE",
       "sexualContentGraphicAndNudity": "NONE",
       "sexualContentOrNudity": "NONE",
       "unrestrictedWebAccess": false,
+      "userGeneratedContent": false,
       "violenceCartoonOrFantasy": "NONE",
       "violenceRealistic": "NONE",
       "violenceRealisticProlongedGraphicOrSadistic": "NONE"
     }
+    // IMPORTANT: ageAssurance is required — omit it and you get 409.
+    // Attribute names changed ~2024. Old names (alcoholTobaccoDrugs etc.) return 409 UNKNOWN.
+    // Types are mixed: boolean fields vs "NONE"/"MILD"/"FREQUENT_AND_INTENSE" string fields.
   }
 }
 ```
@@ -450,9 +460,16 @@ After all above: ASC portal → App Store → version → Submit for Review.
 | 403 GET_COLLECTION on subscriptionAppStoreReviewScreenshots | List endpoint not supported | POST-only resource; no GET collection |
 | 409 "must provide territory relationship" | introductoryOffer POST without territory | POST one offer per territory |
 | 403 FORBIDDEN_ERROR on subscriptionAvailabilities | Endpoint is deprecated | Use `subscriptionPlanAvailabilities` |
-| 500 UNEXPECTED_ERROR | Transient ASC server error | Retry with exponential back-off (10s × attempt) |
+| 500 UNEXPECTED_ERROR | Transient ASC server error OR full ASC outage | Health-check first (`GET /apps/APP_ID`). If health check also 500/000, it's an outage — wait. Otherwise retry with back-off. |
+| HTTP 000 / empty response from curl | URL contains `[...]` and `-g` flag is missing | Always use `curl -g` with field-filter URLs |
 | STATE_ERROR on subtitle PATCH | App in PREPARE_FOR_SUBMISSION, no change | Fetch current value first; skip if unchanged |
 | Empty price ladder | Some territories (e.g. BMU) have no price points | Skip gracefully with `continue` |
+| 409 ENTITY_ERROR.ATTRIBUTE.UNKNOWN on age rating | Old attribute names used (e.g. `alcoholTobaccoDrugs`) | Use new names: `alcoholTobaccoOrDrugUseOrReferences`, `gamblingSimulated`, etc. See SKILL.md §4 for full list |
+| 409 "must provide value for 'ageAssurance'" | `ageAssurance` field missing from age rating PATCH | Add `"ageAssurance": false` to the attributes |
+| 409 on category relationships via `/apps` | `primaryCategory` is not a relationship on the `apps` resource | Use `PATCH /appInfos/APP_INFO_ID` with relationships instead |
+| 404 PATH_ERROR on `/appDataUsages` | Endpoint permanently removed from ASC API | Do App Privacy nutrition labels in portal only |
+| privacyPolicyUrl not updating | Patching the wrong resource (`/apps` instead of `/appInfoLocalizations`) | Privacy URL lives on `appInfoLocalizations` (per-locale), not on `apps` |
+| supportUrl not updating | Patching `appInfoLocalizations` instead of `appStoreVersionLocalizations` | Support URL lives on `appStoreVersionLocalizations` (version-scoped), not `appInfoLocalizations` |
 
 ---
 
